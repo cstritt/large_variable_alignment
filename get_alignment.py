@@ -10,8 +10,7 @@
     
     -x DNPs: extract correct base
     -x first evaluate site before adding bases to seq
-    
-    
+
 class args:
 
     def __init__(self):
@@ -40,24 +39,18 @@ from lib import variable_alignment
 
 def get_args():
 
-    dirname = os.path.dirname(__file__) # 
+    dirname = os.path.dirname(__file__)
 
     parser = argparse.ArgumentParser(
-        description='Creates a fasta of polymorphic positions, given a list of gnumbers.')
+        
+        description='Creates a fasta of polymorphic positions, given a list of gnumbers. \
+            Also outputs the number of non-variable positions per base.')
     
     parser.add_argument('-i', dest='input', required = True,
                         help='path to the input file containing one gnumber per row (no header).')
     
     parser.add_argument('-o', dest='output_prefix',required=True,
                         help='basename for output files')
-    
-    parser.add_argument('-md', dest='mindepth', default=5, type = int,
-                        help='Depth below which an allele is called as missing')
-    
-    parser.add_argument('-t', dest='threads', default = 1, type=int, help = 'Number of threads.')
-    
-    parser.add_argument('-db', dest='debug',  action = 'store_true', 
-                        help = 'If set, write to stderr problematic sites to doublecheck.')
     
     parser.add_argument('-rep', dest='repeats',
                         help='path to bed file with positions to exclude', 
@@ -67,99 +60,58 @@ def get_args():
                         help='provide the path to file containing the genomic positions you want filtered out of the fasta.',
                         default = 'resources/20160911_DR_filter_pos_reseqTB.txt')
     
-    # parser.add_argument('-g',dest='gaps',
-    #                     help='threshold for "-" and "N". Default is 0.9.',
-    #                     default=0.9,type=float)
+    parser.add_argument('-md', dest='mindepth', default=5, type = int,
+                        help='Depth below which an allele is called as missing')
     
-    #parser.add_argument('-outg',dest='outg',
-    #                    help='provide the path to .all.var.vcf file of the outgroup to be used',
-    #                    default=os.path.join(dirname,"../../../Pipeline_TB/Mcan/G00157.all.pos.vcf.gz"))
+    parser.add_argument('-mm', dest='maxmissing', default=0.1, type = float,
+                        help='Maximum proportion of missing alleles allowed per site')
     
-    #parser.add_argument('-outg-name',dest='outg_name',
-    #                    help='name of the outgroup. Will be added to the fasta.',
-    #                    default="Mycobacterium_canettii")
+    parser.add_argument('-outg',dest='outgroup', 
+                        help='G number of the outgroup strain. Default is canettii ET1291 (G742339)',
+                        default='G742339')
     
-    #parser.add_argument('-ref', dest='reference', 
-    #                    help = 'TB reference fasta',
-    #                    default = "/scicore/home/gagneux/SOFT/MTB_ref_fasta/MTB_ancestor_reference.fasta")
+    parser.add_argument('-ref', dest='reference', 
+                        help = 'Reference genome, used to count the number of non-variable bases.',
+                        default = "resources/MTB_ancestor_reference.fasta")
 
     args = parser.parse_args()
 
     return args
 
 
-
-
 def main():
-    """
-    Main function to run the large variable alignment pipeline.
 
-    This function will load the input files (VCF, depth files, etc), 
-    add the variable positions to the alignment, add missing alleles
-    and write out the final alignment and stats.
-
-    Parameters
-    ----------
-    None
-
-    Returns
-    -------
-    None
-    """
-    
     start_time = time.time()
        
     args = get_args()
     
-    # Load input
-    var_aln = variable_alignment(args)
-
+    # Mise en place
+    mep = variable_alignment.mep(args)
 
     # Get variable positions
-    vcf_start_time = time.time()    
+    sys.stdout.write("Getting variable positions\n")
+    start_varpos = time.time()
+    variable_positions = variable_alignment.variantmatrix(mep)
+    variable_positions.add_SNPs(mep)
+    end_varpos = time.time()
+    sys.stdout.write("Added variable positions in %f seconds\n" % (end_varpos - start_varpos))
     
-    var_aln.add_SNPs()
+    # Add missing positions
+    sys.stdout.write("Adding missing positions\n")
+    start_missing = time.time()
+    variable_positions.traverse_depth_files(mep)
+    end_missing = time.time()
+    sys.stdout.write("Added missing positions in %f seconds\n" % (end_missing - start_missing))
     
-    vcf_end_time = time.time()    
-    vcf_time = vcf_end_time - vcf_start_time
-    sys.stdout.write("Added variable positions in %f seconds\n" % (vcf_time))
-    
-    
-    # Add missing alleles
-    depth_start_time = time.time()
-    #cpu_usage_before = psutil.cpu_percent()
-    #mem_usage_before = psutil.virtual_memory().percent
-    #disk_io_before = psutil.disk_io_counters()
-    
-    #var_aln.add_missing_bases(min_depth = 5) # parallelize this part ...
-    #var_aln.process_depth_files(min_depth = 5) 
-    var_aln.parallel_extract_rows(chunk_size = 200)
-        
-    depth_end_time = time.time()
-    depth_time = depth_end_time - depth_start_time
-    sys.stdout.write("Added missing alleles in %f seconds\n" % (depth_time))
-    
-    #cpu_usage_after = psutil.cpu_percent()
-    #mem_usage_after = psutil.virtual_memory().percent
-    #disk_io_after = psutil.disk_io_counters()
-    #sys.stdout.write("CPU usage during missing allele addition: %f%%\n" % (cpu_usage_after - cpu_usage_before))
-    #sys.stdout.write("Mem usage during missing allele addition: %f%%\n" % (mem_usage_after - mem_usage_before))
-    #sys.stdout.write("i/o during missing allele addition: %f%%\n" % (disk_io_after - disk_io_before))
-
     # Write output
-    var_aln.get_seqs()
-    var_aln.write_alignment(args.output_prefix, '.')    
-    var_aln.write_positions(args.output_prefix, '.')   
-    var_aln.write_stats(args.output_prefix, '.')  
-    
-    # Write debugging info
-    if args.debug:
-        var_aln.write_weird_sites()
-    
-    
+    output = variable_alignment.output(mep)
+    output.get_seqs(mep, variable_positions)
+    output.count_nonvariable(mep)
+    output.write_files(mep)
+   
+    # Done
     end_time = time.time()
-    elapsed_time = end_time - start_time
-    sys.stdout.write("Total time: %f seconds\n" % (elapsed_time))
+    sys.stdout.write("Total time: %f seconds\n" % (end_time - start_time))
     
     
 if __name__ == '__main__':
