@@ -10,7 +10,7 @@
             "request": "launch",
             "program": "${file}",
             "console": "integratedTerminal",
-            "args": ["-i", "100_genomes.txt", "-o", "100_genomes.snp_aln"],
+            "args": ["-i", "100_genomes.txt", "-o", "100_genomes.snp_aln", "-s", "100"],
             "python": "/scicore/home/gagneux/stritt0001/miniconda3/bin/python"
         }
     ]

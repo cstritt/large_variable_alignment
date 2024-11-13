@@ -3,7 +3,9 @@ import numba
 import numpy as np
 import os
 import pandas as pd
+import random
 import struct
+import sys
 
 from Bio import SeqIO
 from Bio.SeqRecord import SeqRecord
@@ -37,6 +39,9 @@ class mep:
         path_to_VCF =  os.path.join(self.path_to_v2_output,g[0:3],g[3:5],g[5:],g+'.{}'.format(self.snps_suffix))
         path_to_depth_file =  os.path.join(self.path_to_v2_output,g[0:3],g[3:5],g[5:],g+'.{}'.format(self.depth_suffix))
         self.filepaths[g] = (path_to_VCF, path_to_depth_file)
+        
+        # Subsampling?
+        self.subsample = args.subsample
             
         # Reference genome
         self.reference = SeqIO.read(args.reference, 'fasta')
@@ -82,11 +87,12 @@ class variantmatrix:
 
         self.stats =  {   
             'filt_repeats' : 0,
-            'filt_dr' : 0
+            'filt_dr' : 0,
+            'ref_larger_than_one' : 0
         }
         
 
-    def add_SNPs(self, mep):        
+    def add_SNPs(self, mep): 
         """
         Function to read in SNPs from VCF files and store them in a nested dictionary.
         
@@ -151,21 +157,39 @@ class variantmatrix:
                                 
                         # Multi-nucleotide polymorphism
                         if len(ref) > 1 and len(ref) == len(alt):
+                            
+                            self.stats['ref_larger_than_one'] += 1
 
                             for i,base in enumerate(alt):
-                                
-                                if pos+1 not in variant_dict:
+                                if pos+i not in variant_dict:
                                     variant_dict[pos+i] = {} 
                                 variant_dict[pos+i][g] = base
                                 
             return variant_dict
         
+
         self.variants = get_variant_dict(mep.gnumbers)
-        self.outgroup_alleles = get_variant_dict([mep.outgroup])
-        self.variable_positions = sorted(list(self.variants.keys()))
         
-        # Convert nested dictionary to pandas dataframe for faster access                    
-        self.variants = pd.DataFrame.from_dict(self.variants, orient='index')
+        # Remove variants that are only present in the reference
+        ref_variants = [pos for pos in self.variants if len(self.variants[pos]) == len(mep.gnumbers)]
+        for pos in ref_variants:
+            del self.variants[pos]
+            
+        #Get outgroup alleles 
+        self.outgroup_alleles = get_variant_dict([mep.outgroup])
+        
+        # Total number of variable positions
+        self.variable_positions = sorted(list(self.variants.keys()), key=int)
+        
+        # Subsample if specified
+        if mep.subsample is not None:
+            self.pos_subset = random.sample(self.variable_positions, mep.subsample)
+            self.pos_subset = sorted(self.pos_subset, key=int)
+            self.subsample_excluded = [pos for pos in self.variable_positions if pos not in self.pos_subset]  ## Needed to estimate non-variable positions
+        else:
+            self.subsample_excluded = []
+                
+        #self.variants = pd.DataFrame.from_dict(self.variants, orient='index')  # Takes a lot of memory!!!
 
 
     def extract_rows_ra(self, path_to_depth, positions, mindepth):
@@ -203,25 +227,30 @@ class variantmatrix:
                 row_int = struct.unpack('i', row[:4])[0]
                 
                 # Add missing position to list
-                if row_int > mindepth:
+                if row_int < mindepth:
                     missing.append(row_idx)
                     
         return missing
     
+    
     def traverse_depth_files(self, mep):
         
         depth_files = {g: mep.filepaths[g][1] for g in mep.gnumbers if g != mep.outgroup}
+        
+        positions = self.variable_positions if mep.subsample is None else self.pos_subset  ## Only consider subset
+        
         for g, depth_file in depth_files.items():
-            missing = self.extract_rows_ra(depth_file, self.variable_positions,mep.mindepth)
-            self.variants.loc[missing, g] = '-' 
-            
+            missing = self.extract_rows_ra(depth_file, positions, mep.mindepth)
+            for pos in missing: 
+                self.variants[pos][g] = '-'
+
         # Same for outgroup
-        missing = self.extract_rows_ra(mep.filepaths[mep.outgroup][1], self.variable_positions, mep.mindepth)
+        missing = self.extract_rows_ra(mep.filepaths[mep.outgroup][1], positions, mep.mindepth)
         for pos in missing:
             if pos not in self.outgroup_alleles:
                 self.outgroup_alleles[pos] = {}
             self.outgroup_alleles[pos][mep.outgroup] = '-'
-        self.outgroup_alleles = pd.DataFrame.from_dict(self.outgroup_alleles, orient='index')
+        #self.outgroup_alleles = pd.DataFrame.from_dict(self.outgroup_alleles, orient='index')
 
 
 class output:
@@ -240,10 +269,10 @@ class output:
         }
         
         
-    def get_seqs(self, mep, variantmatrix, get_stats=False):
+    def get_seqs(self, mep, variantmatrix):
         
         # Pandas to numpy for speed
-        variantmatrix.variants = variantmatrix.variants.values
+        #variantmatrix.variants = variantmatrix.variants.values
         
         self.stats = {
             'filt_maxmissing' : [],
@@ -253,27 +282,17 @@ class output:
         }
         
         self.stats.update(variantmatrix.stats)
-            
-        for i in range(len(variantmatrix.variants)):
-            
-            site_raw = variantmatrix.variants[i]
-            pos = variantmatrix.variable_positions[i]
         
+        positions = variantmatrix.variable_positions if mep.subsample is None else variantmatrix.pos_subset
+            
+        for pos in positions:
+            
             site = ''
-
-            for gt in site_raw:
-
-                # Alt allele or missing (-)
-                if isinstance(gt, str):
-                    site += gt
-                # Ref allele
+            for g in mep.gnumbers:
+                if g in variantmatrix.variants[pos]:
+                    site += variantmatrix.variants[pos][g]
                 else:
                     site += mep.reference[pos-1]
-                    
-            # Skip sites for which only the reference differs
-            site_no_missing = site.replace('-', '')
-            if len(set(site_no_missing)) == 1:
-                continue
             
             # Proportion of missing alleles
             n_missing = site.count('-')
@@ -285,32 +304,16 @@ class output:
             # Add bases to sequences
             for base,g in zip(site, mep.gnumbers):
                 self.seqs[g] += base
-                
             self.sites_in_alignment.append(pos)
             
-            if get_stats:
-                alleles = set(site_no_missing)
-                # Allele counting                                
-                if len(alleles) == 2:
-                    self.stats['biallelic'] += 1
-                elif len(alleles) > 2:
-                    self.stats['multiallelic'] += 1
-                    
-                # Singleton?
-                counts = Counter(site_no_missing)
-                freqs = sorted(counts.values())
-                if freqs == [1,len(site_no_missing)-1]:
-                    self.stats['singletons'] += 1
-                    
-                    
         # Add outgroup alleles
         if mep.outgroup:
             
             self.seqs[mep.outgroup] = ''
         
             for pos in self.sites_in_alignment:
-                if pos in variantmatrix.outgroup_alleles.index:
-                    self.seqs[mep.outgroup] += variantmatrix.outgroup_alleles.loc[pos, mep.outgroup]
+                if pos in variantmatrix.outgroup_alleles:
+                    self.seqs[mep.outgroup] += variantmatrix.outgroup_alleles[pos][mep.outgroup]
                 else:
                     self.seqs[mep.outgroup] += 'N'
                 
@@ -321,12 +324,13 @@ class output:
             raise ValueError('Sequences have different lengths')
                     
                     
-    def count_nonvariable(self, mep):
+    def count_nonvariable(self, mep, variantmatrix):
         """ 
         Estimate the number of non-variable positions in the alignment. 
+        Do not count sites excluded through subsampling or the maxmissing filter.
         """
         
-        called_or_ignored = set(self.sites_in_alignment) | set(mep.repeats) | set(mep.dr_loci)
+        called_or_ignored = set(self.sites_in_alignment) | set(mep.repeats) | set(mep.dr_loci) | set(self.stats['filt_maxmissing']) | set(variantmatrix.subsample_excluded)
         
         for i, base in enumerate(mep.reference):
             
@@ -339,7 +343,7 @@ class output:
     def write_files(self, mep, get_stats=False):
  
         # alignment
-        with open(f'{mep.output_prefix}.aligned.fasta', 'w') as fasta_handle:
+        with open(f'{mep.output_prefix}.alignment.fasta', 'w') as fasta_handle:
                     
             for g in self.seqs:
                 rec = SeqRecord(Seq(self.seqs[g]), id=g, name='', description='')

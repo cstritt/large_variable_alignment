@@ -52,6 +52,11 @@ def get_args():
     parser.add_argument('-o', dest='output_prefix',required=True,
                         help='basename for output files')
     
+    parser.add_argument('-s', dest='subsample', type=int, help='Subsample to N strains')
+    
+    # Option to get gene-wise alignments, including non-variable sites
+    #parser.add_argument('-b', dest='bed', help='Bed file with gene coordinates and names to include in the alignment')
+    
     parser.add_argument('-rep', dest='repeats',
                         help='path to bed file with positions to exclude', 
                         default = 'resources/regions_blindspots_modlin_farhat.bed')
@@ -90,29 +95,35 @@ def main():
 
     # Get variable positions
     sys.stdout.write("Getting variable positions\n")
+    sys.stdout.flush()
     start_varpos = time.time()
-    variable_positions = variable_alignment.variantmatrix(mep)
-    variable_positions.add_SNPs(mep)
+    variantmatrix = variable_alignment.variantmatrix(mep)
+    variantmatrix.add_SNPs(mep)
+    sys.stdout.write(f'{len(variantmatrix.variable_positions)} variable positions\n')
+    sys.stdout.flush()
     end_varpos = time.time()
     sys.stdout.write("Added variable positions in %f seconds\n" % (end_varpos - start_varpos))
+    sys.stdout.flush()
     
     # Add missing positions
     sys.stdout.write("Adding missing positions\n")
+    sys.stdout.flush()
     start_missing = time.time()
-    variable_positions.traverse_depth_files(mep)
+    variantmatrix.traverse_depth_files(mep)
     end_missing = time.time()
     sys.stdout.write("Added missing positions in %f seconds\n" % (end_missing - start_missing))
+    sys.stdout.flush()
     
     # Write output
     output = variable_alignment.output(mep)
-    output.get_seqs(mep, variable_positions)
-    output.count_nonvariable(mep)
+    output.get_seqs(mep, variantmatrix)
+    output.count_nonvariable(mep, variantmatrix)
     output.write_files(mep)
    
     # Done
     end_time = time.time()
     sys.stdout.write("Total time: %f seconds\n" % (end_time - start_time))
-    
+    sys.stdout.flush()
     
 if __name__ == '__main__':
     main()
