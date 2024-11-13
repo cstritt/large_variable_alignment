@@ -39,8 +39,8 @@ from lib import variable_alignment
 
 def get_args():
 
-    dirname = os.path.dirname(__file__)
-
+    dirpath = os.path.dirname(__file__)
+    
     parser = argparse.ArgumentParser(
         
         description='Creates a fasta of polymorphic positions, given a list of gnumbers. \
@@ -59,11 +59,11 @@ def get_args():
     
     parser.add_argument('-rep', dest='repeats',
                         help='path to bed file with positions to exclude', 
-                        default = 'resources/regions_blindspots_modlin_farhat.bed')
+                        default = os.path.join(dirpath,'resources/regions_blindspots_modlin_farhat.bed'))
     
     parser.add_argument('-dr', dest='drug',
                         help='provide the path to file containing the genomic positions you want filtered out of the fasta.',
-                        default = 'resources/20160911_DR_filter_pos_reseqTB.txt')
+                        default = os.path.join(dirpath,'resources/20160911_DR_filter_pos_reseqTB.txt'))
     
     parser.add_argument('-md', dest='mindepth', default=5, type = int,
                         help='Depth below which an allele is called as missing')
@@ -77,7 +77,7 @@ def get_args():
     
     parser.add_argument('-ref', dest='reference', 
                         help = 'Reference genome, used to count the number of non-variable bases.',
-                        default = "resources/MTB_ancestor_reference.fasta")
+                        default = os.path.join(dirpath,"resources/MTB_ancestor_reference.fasta"))
 
     args = parser.parse_args()
 
