@@ -1,34 +1,4 @@
-#!/usr/bin/env python
-
-""" To do:
-
-    - debug mode: return histogram for missing data, per strain and per site
-    -x parallelize depth file traversals
-    - check indexing of different files (0 or 1)
-    -x use indices rather than g numbers in dictionaries?
-    - filters for max missing strain and site
-    
-    -x DNPs: extract correct base
-    -x first evaluate site before adding bases to seq
-
-class args:
-
-    def __init__(self):
-
-        self.input = '/home/cristobal/TB/projects/detettoreTB/NOTEBOOKS/D_SR_data/alignment/10strains.txt'
-        self.directory = '/home/cristobal/TB/projects/detettoreTB/NOTEBOOKS/D_SR_data/alignment/data'
-        self.bed = '/home/cristobal/TB/gitlab/PipelineMTB/Pipeline_TB_v2/repetitive_regions/regions_blindspots_modlin_farhat.bed'
-        self.drug = '/home/cristobal/TB/gitlab/PipelineMTB/Pipeline_TB/useful_scripts/20160911_DR_filter_pos_reseqTB.txt'
-        self.gaps = 0.9
-        self.mindepth = 5
-        self.outg = ''
-        self.suffix = "mutect2.filtered.homo.snps.vcf"
-        self.threads = 1
-        self.output_prefix = 'test'
-        
-args = args()
-
-"""
+#!/usr/bin/env python3
 
 import argparse
 import os
@@ -52,7 +22,7 @@ def get_args():
     parser.add_argument('-o', dest='output_prefix',required=True,
                         help='basename for output files')
     
-    parser.add_argument('-s', dest='subsample', type=int, help='Subsample to N strains')
+    parser.add_argument('-s', dest='subsample', type=int, help='Subsample to N sites.')
     
     # Option to get gene-wise alignments, including non-variable sites
     #parser.add_argument('-b', dest='bed', help='Bed file with gene coordinates and names to include in the alignment')

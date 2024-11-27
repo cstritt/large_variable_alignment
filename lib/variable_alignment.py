@@ -1,16 +1,13 @@
 import gzip
-import numba
-import numpy as np
 import os
-import pandas as pd
 import random
 import struct
-import sys
+
 
 from Bio import SeqIO
 from Bio.SeqRecord import SeqRecord
 from Bio.Seq import Seq
-from collections import Counter
+
 
 class mep:
     
@@ -278,7 +275,8 @@ class output:
             'filt_maxmissing' : [],
             'biallelic' : 0,
             'multiallelic' : 0,
-            'singletons' : 0
+            'singletons' : 0,
+            'invariant' : 0
         }
         
         self.stats.update(variantmatrix.stats)
@@ -293,6 +291,13 @@ class output:
                     site += variantmatrix.variants[pos][g]
                 else:
                     site += mep.reference[pos-1]
+                    
+            # Re-check if site is invariant
+            site_bases_only = ''.join([base for base in site if base in 'ACGT'])
+            if len(set(site_bases_only)) == 1:  
+                self.stats['invariant'] += 1
+                continue
+            
             
             # Proportion of missing alleles
             n_missing = site.count('-')

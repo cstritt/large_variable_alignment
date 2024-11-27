@@ -1,0 +1,5 @@
+lib/__pycache__
+.vscode
+run26k_strains.slrm
+launch.json
+depth_file_traversal.ipynb
