@@ -44,8 +44,10 @@ class mep:
         self.reference = SeqIO.read(args.reference, 'fasta')
         self.reference = str(self.reference.seq)
         
-        # Output prefix
-        self.output_prefix = args.output_prefix
+        # Create output directory
+        self.output_folder = args.output_folder
+        if not os.path.exists(self.output_folder):
+            os.makedirs(self.output_folder)
         
         # Positions in repeats
         self.repeats = set()
@@ -348,24 +350,23 @@ class output:
     def write_files(self, mep, get_stats=False):
  
         # alignment
-        with open(f'{mep.output_prefix}.alignment.fasta', 'w') as fasta_handle:
-                    
+        with open(os.path.join(mep.output_folder, 'snp_alignment.fasta'), 'w') as fasta_handle:
             for g in self.seqs:
                 rec = SeqRecord(Seq(self.seqs[g]), id=g, name='', description='')
                 SeqIO.write(rec, fasta_handle, 'fasta')
 
         # positions
-        with open(f'{mep.output_prefix}.positions.tsv', 'w') as f:
+        with open(os.path.join(mep.output_folder, 'positions_in_alignment.tsv'), 'w') as f:
               for pos in self.sites_in_alignment:
                   f.write(str(pos) + '\n')
                   
         # counts of non-variable bases                  
-        with open(f'{mep.output_prefix}.nonvariable.tsv', 'w') as f:
+        with open(os.path.join(mep.output_folder, 'nonvariable_counts.tsv'), 'w') as f:
             for base in self.non_variable:
                 f.write(base + '\t' + str(self.non_variable[base]) + '\n')
                 
         # stats
-        with open(f'{mep.output_prefix}.stats.tsv', 'w') as f:
+        with open(os.path.join(mep.output_folder, 'stats.tsv'), 'w') as f:
             for k, v in self.stats.items():
                 
                 if not get_stats and k in ['biallelic', 'multiallelic', 'singletons']:

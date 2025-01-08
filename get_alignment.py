@@ -17,10 +17,10 @@ def get_args():
             Also outputs the number of non-variable positions per base.')
     
     parser.add_argument('-i', dest='input', required = True,
-                        help='path to the input file containing one gnumber per row (no header).')
+                        help='Path to the input file containing one gnumber per row (no header).')
     
-    parser.add_argument('-o', dest='output_prefix',required=True,
-                        help='basename for output files')
+    parser.add_argument('-o', dest='output_folder',required=True,
+                        help='Path to output folder.')
     
     parser.add_argument('-s', dest='subsample', type=int, help='Subsample to N sites.')
     
@@ -28,11 +28,11 @@ def get_args():
     #parser.add_argument('-b', dest='bed', help='Bed file with gene coordinates and names to include in the alignment')
     
     parser.add_argument('-rep', dest='repeats',
-                        help='path to bed file with positions to exclude', 
+                        help='Path to bed file with positions to exclude', 
                         default = os.path.join(dirpath,'resources/regions_blindspots_modlin_farhat.bed'))
     
     parser.add_argument('-dr', dest='drug',
-                        help='provide the path to file containing the genomic positions you want filtered out of the fasta.',
+                        help='Provide the path to file containing the genomic positions you want filtered out of the fasta.',
                         default = os.path.join(dirpath,'resources/20160911_DR_filter_pos_reseqTB.txt'))
     
     parser.add_argument('-md', dest='mindepth', default=5, type = int,

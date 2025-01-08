@@ -13,8 +13,7 @@
 source ~/miniconda3/bin/activate base
 
 gnumbers=$1
-pref=$(echo $gnumbers | cut -d'.' -f1)
 
 python get_alignment.py \
 -i $gnumbers \
--o $pref.snp_aln
+-o ./example
