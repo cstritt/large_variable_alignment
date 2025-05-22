@@ -12,21 +12,18 @@ def get_args():
     dirpath = os.path.dirname(__file__)
     
     parser = argparse.ArgumentParser(
-        
-        description='Creates a fasta of polymorphic positions, given a list of gnumbers. \
-            Also outputs the number of non-variable positions per base.')
+        description = """
+        Creates a fasta of polymorphic positions and a list of these positions, 
+        given a list of gnumbers. Also outputs the number of non-variable positions 
+        per base.
+        """)
     
-    parser.add_argument('-i', dest='input', required = True,
+    parser.add_argument('-i', dest='input', required=True,
                         help='Path to the input file containing one gnumber per row (no header).')
     
     parser.add_argument('-o', dest='output_folder',required=True,
                         help='Path to output folder.')
-    
-    parser.add_argument('-s', dest='subsample', type=int, help='Subsample to N sites.')
-    
-    # Option to get gene-wise alignments, including non-variable sites
-    #parser.add_argument('-b', dest='bed', help='Bed file with gene coordinates and names to include in the alignment')
-    
+        
     parser.add_argument('-rep', dest='repeats',
                         help='Path to bed file with positions to exclude', 
                         default = os.path.join(dirpath,'resources/regions_blindspots_modlin_farhat.bed'))
@@ -34,6 +31,9 @@ def get_args():
     parser.add_argument('-dr', dest='drug',
                         help='Provide the path to file containing the genomic positions you want filtered out of the fasta.',
                         default = os.path.join(dirpath,'resources/20160911_DR_filter_pos_reseqTB.txt'))
+    
+    parser.add_argument('-t', dest='threads', default=8, type=int,
+                        help='Number of threads for parallel traversal of depth files')
     
     parser.add_argument('-md', dest='mindepth', default=5, type = int,
                         help='Depth below which an allele is called as missing')
@@ -64,36 +64,38 @@ def main():
     mep = variable_alignment.mep(args)
 
     # Get variable positions
-    sys.stdout.write("Getting variable positions\n")
-    sys.stdout.flush()
+    sys.stderr.write("Getting variable positions\n")
+    sys.stderr.flush()
     start_varpos = time.time()
-    variantmatrix = variable_alignment.variantmatrix(mep)
+    variantmatrix = variable_alignment.variantmatrix()
     variantmatrix.add_SNPs(mep)
-    sys.stdout.write(f'{len(variantmatrix.variable_positions)} variable positions\n')
-    sys.stdout.flush()
+    sys.stderr.write(f'{len(variantmatrix.variable_positions)} variable positions\n')
+    sys.stderr.flush()
     end_varpos = time.time()
-    sys.stdout.write("Added variable positions in %f seconds\n" % (end_varpos - start_varpos))
-    sys.stdout.flush()
+    sys.stderr.write("Added variable positions in %f seconds\n" % (end_varpos - start_varpos))
+    sys.stderr.flush()
     
-    # Add missing positions
-    sys.stdout.write("Adding missing positions\n")
-    sys.stdout.flush()
+    # Convert to numpy array and remove REF only sites
+    variantmatrix.convert_to_array(mep)
+    sys.stderr.write(f'Estimated memory requirement for {len(mep.gnumbers)}x{len(variantmatrix.variable_positions)} matrix: {variantmatrix.mem_required}G\n')
+    
+    # Add missing positions and filter sites
+    sys.stderr.write("Adding missing positions\n")
+    sys.stderr.flush()
     start_missing = time.time()
-    variantmatrix.traverse_depth_files(mep)
+    variantmatrix.traverse_depth_files_parallel(mep)
     end_missing = time.time()
-    sys.stdout.write("Added missing positions in %f seconds\n" % (end_missing - start_missing))
-    sys.stdout.flush()
-    
+    sys.stderr.write("Added missing positions in %f seconds\n" % (end_missing - start_missing))
+    sys.stderr.flush()
+    variantmatrix.max_missing_filter(mep)
+        
     # Write output
-    output = variable_alignment.output(mep)
-    output.get_seqs(mep, variantmatrix)
-    output.count_nonvariable(mep, variantmatrix)
-    output.write_files(mep)
-   
+    variantmatrix.write_output(mep)
+    
     # Done
     end_time = time.time()
-    sys.stdout.write("Total time: %f seconds\n" % (end_time - start_time))
-    sys.stdout.flush()
+    sys.stderr.write("Total time: %f seconds\n" % (end_time - start_time))
+    sys.stderr.flush()
     
 if __name__ == '__main__':
     main()

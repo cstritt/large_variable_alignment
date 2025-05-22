@@ -1,16 +1,21 @@
 import gzip
+import numpy
 import os
-import random
 import struct
-
+import sys
 
 from Bio import SeqIO
 from Bio.SeqRecord import SeqRecord
 from Bio.Seq import Seq
+from collections import defaultdict
+from joblib import Parallel, delayed
 
 
 class mep:
+    """ 
     
+    """
+
     def __init__(self, args):
        
         # Hard-code some parameters to v2
@@ -36,9 +41,6 @@ class mep:
         path_to_VCF =  os.path.join(self.path_to_v2_output,g[0:3],g[3:5],g[5:],g+'.{}'.format(self.snps_suffix))
         path_to_depth_file =  os.path.join(self.path_to_v2_output,g[0:3],g[3:5],g[5:],g+'.{}'.format(self.depth_suffix))
         self.filepaths[g] = (path_to_VCF, path_to_depth_file)
-        
-        # Subsampling?
-        self.subsample = args.subsample
             
         # Reference genome
         self.reference = SeqIO.read(args.reference, 'fasta')
@@ -51,64 +53,67 @@ class mep:
         
         # Positions in repeats
         self.repeats = set()
-        
         with open(args.repeats,'r') as f:
             next(f)
-            
             for line in f:
                 fields = line.strip().split('\t')
                 start = int(fields[1])
                 end = int(fields[2])
-                
                 for pos in range(start, end + 1):
                     self.repeats.add(pos)
             
         # Positions in DR loci     
         self.dr_loci = set()
-
         with open(args.drug,'r') as f:
             for line in f:
                 dr_pos = line.strip()
-                self.dr_loci.add(int(dr_pos))
-                
+                self.dr_loci.add(int(dr_pos))             
    
         # Filters: depth below which a site is considered missing, 
         # maximum proportion of missing alleles at a site
         self.mindepth = args.mindepth
         self.maxmissing = args.maxmissing
+        self.threads = args.threads
 
 
 class variantmatrix:
+    """ 
     
-    def __init__(self,mep):
+    """
+    
+    def __init__(self):
         
-        #self.variantmatrix = pd.DataFrame(columns=mep.gnumbers, index=pd.Index([], dtype=int))
-
+        # Filled by add_SNPs
+        self.variable_positions = []
+        self.variant_dict = {}
+        self.outgroup_alleles = {}
+        
         self.stats =  {   
-            'filt_repeats' : 0,
-            'filt_dr' : 0,
+            'filt_repeats' : set(),
+            'filt_dr' : set(),
             'ref_larger_than_one' : 0
         }
         
-
+        # Filled by convert_to_array
+        self.mem_required = 0
+        
+        # Filled by traverse_depth_files
+        self.n_missing = {}
+        
+    
     def add_SNPs(self, mep): 
         """
-        Function to read in SNPs from VCF files and store them in a nested dictionary.
-        
-        The nested dictionary has the following structure:
+        Function to read in SNPs from VCF files and store them in a nested dictionary:
         
         - The first key is the position of the SNP in the MTB ancestor genome.
         - The second key is the strain name, or 'MTB_anc' for the ancestor.
         - The value is the base at that position in the given strain.
         
-        The function also counts the number of SNPs that are multi-nucleotide 
-        polymorphisms (MNPs) and stores this in the 'MNPs' key of the self.stats 
-        dictionary.
         """
         
         def get_variant_dict(gnumbers):
             
-            variant_dict = {}
+            variant_dict = defaultdict(dict)
             
             for g in gnumbers:
                 
@@ -123,17 +128,19 @@ class variantmatrix:
                         
                         fields = line.strip().split('\t')
                         pos = int(fields[1])
+                        
+                        # Ignore variants in repeats and resistance loci
                         if pos in mep.repeats:
-                            self.stats['filt_repeats'] += 1
+                            self.stats['filt_repeats'].add(pos)
                             continue
-                
                         if pos in mep.dr_loci:
-                            self.stats['filt_dr'] += 1
+                            self.stats['filt_dr'].add(pos)
                             continue
                                 
                         ref = fields[3]
                         alt =  fields[4].split(',')
                         
+                        # If there are multiple alt alleles, take the one with the highest support
                         if len(alt) > 1:
                             info = fields[-1].split(':')
                             ad = [int(x) for x in info[1].split(',')]
@@ -150,46 +157,135 @@ class variantmatrix:
                             if len(alt) > 1:
                                 continue
                             
-                            if pos not in variant_dict:
-                                variant_dict[pos] = {}     
                             variant_dict[pos][g] = alt
                                 
-                        # Multi-nucleotide polymorphism
+                        # Multi-nucleotide polymorphism (optionally skip ...)
                         if len(ref) > 1 and len(ref) == len(alt):
-                            
                             self.stats['ref_larger_than_one'] += 1
-
-                            for i,base in enumerate(alt):
-                                if pos+i not in variant_dict:
-                                    variant_dict[pos+i] = {} 
+                            for i, base in enumerate(alt):
                                 variant_dict[pos+i][g] = base
                                 
             return variant_dict
         
-
-        self.variants = get_variant_dict(mep.gnumbers)
-        
-        # Remove variants that are only present in the reference
-        ref_variants = [pos for pos in self.variants if len(self.variants[pos]) == len(mep.gnumbers)]
-        for pos in ref_variants:
-            del self.variants[pos]
-            
-        #Get outgroup alleles 
+        self.variant_dict = get_variant_dict(mep.gnumbers)
         self.outgroup_alleles = get_variant_dict([mep.outgroup])
         
-        # Total number of variable positions
-        self.variable_positions = sorted(list(self.variants.keys()), key=int)
-        
-        # Subsample if specified
-        if mep.subsample is not None:
-            self.pos_subset = random.sample(self.variable_positions, mep.subsample)
-            self.pos_subset = sorted(self.pos_subset, key=int)
-            self.subsample_excluded = [pos for pos in self.variable_positions if pos not in self.pos_subset]  ## Needed to estimate non-variable positions
-        else:
-            self.subsample_excluded = []
-                
-        #self.variants = pd.DataFrame.from_dict(self.variants, orient='index')  # Takes a lot of memory!!!
+        positions = list(self.variant_dict.keys())
+        self.variable_positions = sorted(positions, key=lambda x: int(x))
+    
+    
+    def convert_to_array(self, mep):
+ 
+        base_code = {'A': 0, 'C': 1, 'G': 2, 'T': 3, '-': 4, 'N': 5}
 
+        def encode_base(b):
+            return base_code.get(b, 5)  # N if unknown
+
+        samples = mep.gnumbers        
+        num_sites = len(self.variable_positions)
+        num_samples = len(samples)
+        
+        ref_bases = {pos: mep.reference[pos - 1] for pos in self.variable_positions}
+        
+        self.mem_required = estimate_memory(num_samples, num_sites)
+        
+        # Build base matrix with all "-"/0 initially, samples in rows and sites in columns
+        self.matrix = numpy.full((num_samples, num_sites), base_code['-'], dtype=numpy.uint8)
+        
+        pos_index = {pos: i for i, pos in enumerate(self.variable_positions)}
+        sample_index = {g: i for i, g in enumerate(samples)}
+        
+        keep_sites = []
+   
+        # Fill matrix
+        for pos in self.variable_positions:
+
+            i = pos_index[pos]  # column index
+            ref_base = encode_base(ref_bases[pos])
+            self.matrix[:,i] = ref_base
+            
+            samples_site = self.variant_dict[pos]
+            
+            for sample in samples_site:
+                j = sample_index[sample]
+                base = encode_base(samples_site[sample])
+                self.matrix[j, i] = base
+                
+            # Check if only the REF is different
+            site = self.matrix[:,i]
+            unique_values = numpy.unique(site)
+            if unique_values.size > 1:
+                keep_sites.append(i)
+                
+        n_removed = len(self.variable_positions) - len(keep_sites)
+        sys.stderr.write(f'{n_removed} sites removed where only REF was different.\n')
+                
+        self.matrix = self.matrix[:,keep_sites]
+        self.variable_positions = [self.variable_positions[i] for i in keep_sites]
+    
+    
+    def extract_sorted_rows_from_gz(self, path_to_depth, sorted_positions, mindepth):
+  
+        missing = []
+        pos_idx = 0
+        next_target = sorted_positions[pos_idx]
+        
+        with gzip.open(path_to_depth, 'rt') as f:
+            for i, line in enumerate(f, start=1):
+                if i == next_target:
+                    val = int(line.strip())
+                    if val < mindepth:
+                        missing.append(i)
+                    pos_idx += 1
+                    if pos_idx >= len(sorted_positions):
+                        break
+                    next_target = sorted_positions[pos_idx]
+        
+        return missing
+    
+
+
+    def get_missing_positions(self, sample_idx, path, sorted_positions, mindepth):
+        
+        missing_pos = []
+        
+        with gzip.open(path, 'rt') as f:
+            pos_idx = 0
+            next_target = sorted_positions[pos_idx]
+            for i, line in enumerate(f, start=1):
+                if i == next_target:
+                    if int(line.strip()) < mindepth:
+                        missing_pos.append(next_target)
+                    pos_idx += 1
+                    if pos_idx >= len(sorted_positions):
+                        break
+                    next_target = sorted_positions[pos_idx]
+                    
+        return sample_idx, missing_pos
+    
+    def traverse_depth_files_parallel(self, mep):
+        
+        depth_files = [mep.filepaths[g][1] for g in mep.gnumbers if g != mep.outgroup]
+        
+        missing_positions = Parallel(n_jobs=mep.threads)(
+            delayed(self.get_missing_positions)(
+                idx, sample_path, self.variable_positions, mep.mindepth
+                )
+                for idx, sample_path in enumerate(depth_files)
+        )
+
+        pos_to_col = {pos:i for i, pos in enumerate(self.variable_positions)}
+        
+        for sample_idx, missing_pos in missing_positions:
+            missing_cols = [pos_to_col[pos] for pos in missing_pos]
+            self.matrix[sample_idx, missing_cols] = 4
+            self.n_missing[mep.gnumbers[sample_idx]] = len(missing_cols)
+            
+        n, missing_outgroup = self.get_missing_positions('N', mep.filepaths[mep.outgroup][1], self.variable_positions, mep.mindepth)
+
+        for pos in missing_outgroup:
+            self.outgroup_alleles[pos][mep.outgroup] = '-'
+            
 
     def extract_rows_ra(self, path_to_depth, positions, mindepth):
         """ Use random access to extract rows rapidly from depth file
@@ -236,20 +332,112 @@ class variantmatrix:
         
         depth_files = {g: mep.filepaths[g][1] for g in mep.gnumbers if g != mep.outgroup}
         
-        positions = self.variable_positions if mep.subsample is None else self.pos_subset  ## Only consider subset
+        positions = self.variable_positions
+        samples = mep.filepaths.keys()
+        pos_index = {pos: i for i, pos in enumerate(positions)}
+        sample_index = {g: i for i, g in enumerate(samples)}
         
         for g, depth_file in depth_files.items():
-            missing = self.extract_rows_ra(depth_file, positions, mep.mindepth)
+            j = sample_index[g]
+            missing = self.extract_sorted_rows_from_gz(depth_file, positions, mep.mindepth)
             for pos in missing: 
-                self.variants[pos][g] = '-'
-
+                i = pos_index[pos]
+                self.matrix[j,i] = 4
+                
+        
         # Same for outgroup
         missing = self.extract_rows_ra(mep.filepaths[mep.outgroup][1], positions, mep.mindepth)
         for pos in missing:
             if pos not in self.outgroup_alleles:
                 self.outgroup_alleles[pos] = {}
             self.outgroup_alleles[pos][mep.outgroup] = '-'
-        #self.outgroup_alleles = pd.DataFrame.from_dict(self.outgroup_alleles, orient='index')
+
+
+    def max_missing_filter(self, mep):
+        
+        base_code = {'A': 0, 'C': 1, 'G': 2, 'T': 3, '-': 4, 'N': 5}
+        keep_sites = []
+        
+        num_samples = self.matrix.shape[0]
+        num_sites = self.matrix.shape[1]
+        
+        for i in range(num_sites):
+            
+            site = self.matrix[:,i]
+    
+            # Remove sites with to many missing bases
+            missing_prop = numpy.count_nonzero(site == base_code['-']) / num_samples
+            if missing_prop <= mep.maxmissing:
+                keep_sites.append(i)
+                
+        n_removed = num_sites - len(keep_sites)
+        sys.stderr.write(f'{n_removed} sites did not pass max. missing threshold ({mep.maxmissing})\n')
+        
+        self.matrix = self.matrix[:, keep_sites]
+        self.variable_positions = [self.variable_positions[i] for i in keep_sites]
+        
+
+    def write_output(self, mep):
+        """ Output fasta with variable alignment, and txt file
+        with positions that were included.
+        
+        # alignment
+        with open(os.path.join(mep.output_folder, 'snp_alignment.fasta'), 'w') as fasta_handle:
+            for g in self.seqs:
+                rec = SeqRecord(Seq(self.seqs[g]), id=g, name='', description='')
+                SeqIO.write(rec, fasta_handle, 'fasta')
+
+        # positions
+        with open(os.path.join(mep.output_folder, 'positions_in_alignment.tsv'), 'w') as f:
+              for pos in self.sites_in_alignment:
+                  f.write(str(pos) + '\n')
+        
+        
+        """
+        base_code = {'A': 0, 'C': 1, 'G': 2, 'T': 3, '-': 4, 'N': 5}
+        code_base = {v: k for k, v in base_code.items()}
+        ref_bases = {pos: mep.reference[pos - 1] for pos in self.variable_positions}
+
+        fasta_handle = open(os.path.join(mep.output_folder, 'snp_alignment.fasta'), 'w')
+        pos_handle = open(os.path.join(mep.output_folder, 'positions_in_alignment.tsv'), 'w')
+
+        for j, g in enumerate(mep.gnumbers):
+            seq = ''.join(code_base[b] for b in self.matrix[j,:])
+            rec = SeqRecord(Seq(seq), id=g, name='', description='')
+            SeqIO.write(rec, fasta_handle, 'fasta')
+       
+        # Handle outgroup
+        if mep.outgroup:
+            outseq = []
+            for pos in self.variable_positions:
+                ref_base = ref_bases[pos]
+                base = self.outgroup_alleles.get(pos, {}).get(mep.outgroup, ref_base)
+                
+                
+                outseq.append(base)
+            seq = ''.join(outseq)
+            rec = SeqRecord(Seq(seq), id=mep.outgroup, name='', description='')
+            SeqIO.write(rec, fasta_handle, 'fasta')
+
+        # Store aligned positions
+        for pos in self.variable_positions:
+            pos_handle.write(str(pos) + '\n')
+            
+        fasta_handle.close()
+        pos_handle.close()
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 class output:
@@ -267,7 +455,7 @@ class output:
             'T' : 0
         }
         
-        
+         
     def get_seqs(self, mep, variantmatrix):
         
         # Pandas to numpy for speed
@@ -379,3 +567,126 @@ class output:
                     
                 f.write(row)
     
+
+def estimate_memory(nrow, ncol, dtype='int8'):
+    """
+    Estimate the memory requirement for a full NumPy matrix.
+
+    Parameters:
+    - nrow: Number of rows in the matrix.
+    - ncol: Number of columns in the matrix.
+    - dtype: Data type of the matrix elements. Default is 'int8'.
+
+    Returns:
+    - Memory requirement in bytes.
+    """
+
+    # Get the size of the specified data type in bytes
+    size_of_element = numpy.dtype(dtype).itemsize
+
+    # Calculate the total number of elements in the matrix
+    num_elements = nrow * ncol
+
+    # Calculate the total memory required
+    memory_required = num_elements * size_of_element
+    memory_required_gb = memory_required / (1024 ** 3)
+
+    return round(memory_required_gb, 2)
+
+
+
+
+#%% Not used
+
+class variantmatrix_sparse:
+    
+    from scipy.sparse import lil_matrix
+
+    def __init__(self, mep):
+        self.stats = {   
+            'filt_repeats': 0,
+            'filt_dr': 0,
+            'ref_larger_than_one': 0
+        }
+
+    def add_SNPs(self, mep):
+        
+        base_to_int = {"A": 0, "C": 1, "G": 2, "T": 3, "N": 4, "-": 5}
+        
+        variant_positions = set()
+        g_to_idx = {g: idx for idx, g in enumerate(mep.gnumbers)}
+        position_to_idx = {}
+        allele_data = defaultdict(dict)
+
+        def process_vcf(g):
+            path_to_vcf = mep.filepaths[g][0]
+            with open(path_to_vcf) as f:
+                for line in f:
+                    if line.startswith('#'):
+                        continue
+                    fields = line.strip().split('\t')
+                    pos = int(fields[1])
+
+                    if pos in mep.repeats:
+                        self.stats['filt_repeats'] += 1
+                        continue
+                    if pos in mep.dr_loci:
+                        self.stats['filt_dr'] += 1
+                        continue
+
+                    ref = fields[3]
+                    alt = fields[4].split(',')
+
+                    if len(alt) > 1:
+                        info = fields[-1].split(':')
+                        ad = [int(x) for x in info[1].split(',')]
+                        ad_max = ad.index(max(ad))
+                        alt = alt[ad_max - 1]
+                    else:
+                        alt = alt[0]
+
+                    if len(ref) == 1 and len(alt) == 1:
+                        allele_data[pos][g] = base_to_int(alt)
+                        variant_positions.add(pos)
+                    elif len(ref) > 1 and len(ref) == len(alt):
+                        self.stats['ref_larger_than_one'] += 1
+                        for i, base in enumerate(alt):
+                            allele_data[pos+i][g] = base_to_int(base)
+                            variant_positions.add(pos+i)
+
+        for g in mep.gnumbers:
+            process_vcf(g)
+
+        self.variant_positions = sorted(variant_positions)
+        position_to_idx = {pos: idx for idx, pos in enumerate(self.variant_positions)}
+        self.position_to_idx = position_to_idx
+        self.g_to_idx = g_to_idx
+
+        # Sparse matrix initialization (LIL format for fast row-wise assignment)
+        M, N = len(self.g_to_idx), len(self.position_to_idx)
+        self.matrix = lil_matrix((M, N), dtype='U1')
+
+        # Fill the sparse matrix
+        for pos, alleles in allele_data.items():
+            j = position_to_idx[pos]
+            for g, base in alleles.items():
+                i = g_to_idx[g]
+                self.matrix[i, j] = base
+
+    def get_missing_from_depth(self, mep):
+        for g in mep.gnumbers:
+            if g == mep.outgroup:
+                continue
+            path_to_depth = mep.filepaths[g][1]
+            with gzip.open(path_to_depth, 'rb') as f:
+                for pos in self.variant_positions:
+                    offset = (pos - 1) * 5
+                    f.seek(offset)
+                    row = f.read(5)
+                    if len(row) < 5:
+                        continue
+                    row_int = struct.unpack('i', row[:4])[0]
+                    if row_int < mep.mindepth:
+                        i = self.g_to_idx[g]
+                        j = self.position_to_idx[pos]
+                        self.matrix[i, j] = 5

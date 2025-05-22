@@ -1,14 +1,12 @@
 #!/bin/bash
 
 #SBATCH --job-name=example
-#SBATCH --cpus-per-task=1
-#SBATCH --mem=16G
+#SBATCH --cpus-per-task=20
+#SBATCH --mem=20G
 #SBATCH --time=06:00:00
 #SBATCH --output=stdout.o
 #SBATCH --error=stderr.e
 #SBATCH --qos=6hours
-##SBATCH --mail-type=END,FAIL
-##SBATCH --mail-user=crstp.strt@gmail.com
 
 source ~/miniconda3/bin/activate base
 
@@ -16,4 +14,5 @@ gnumbers=$1
 
 python get_alignment.py \
 -i $gnumbers \
--o ./example
+-o ./testing \
+-t 20
