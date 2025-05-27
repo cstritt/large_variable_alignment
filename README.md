@@ -5,7 +5,10 @@ output of the [TBEE variant calling pipeline](https://git.scicore.unibas.ch/TBRU
 
 
 ## Requirements
-Biopython is the only non-standard Python library that is used. 
+Biopython, numpy, joblib
+```
+conda create -n lva -c conda-forge biopython numpy joblib
+```
 
 
 ## Input: 

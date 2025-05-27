@@ -210,18 +210,6 @@ class variantmatrix:
                 j = sample_index[sample]
                 base = encode_base(samples_site[sample])
                 self.matrix[j, i] = base
-                
-            # Check if only the REF is different
-            site = self.matrix[:,i]
-            unique_values = numpy.unique(site)
-            if unique_values.size > 1:
-                keep_sites.append(i)
-                
-        n_removed = len(self.variable_positions) - len(keep_sites)
-        sys.stderr.write(f'{n_removed} sites removed where only REF was different.\n')
-                
-        self.matrix = self.matrix[:,keep_sites]
-        self.variable_positions = [self.variable_positions[i] for i in keep_sites]
     
     
     def extract_sorted_rows_from_gz(self, path_to_depth, sorted_positions, mindepth):
@@ -357,6 +345,8 @@ class variantmatrix:
         
         base_code = {'A': 0, 'C': 1, 'G': 2, 'T': 3, '-': 4, 'N': 5}
         keep_sites = []
+        ref_filt_count = 0
+        miss_filt_count = 0
         
         num_samples = self.matrix.shape[0]
         num_sites = self.matrix.shape[1]
@@ -364,14 +354,28 @@ class variantmatrix:
         for i in range(num_sites):
             
             site = self.matrix[:,i]
-    
+            
+            # Check if only the REF is different
+            valid_site = site[numpy.isin(site, [0, 1, 2, 3])]
+            unique_values = numpy.unique(valid_site)
+            ref_filt = True if unique_values.size == 1 else False
+            
             # Remove sites with to many missing bases
             missing_prop = numpy.count_nonzero(site == base_code['-']) / num_samples
-            if missing_prop <= mep.maxmissing:
+            miss_filt = True if missing_prop > mep.maxmissing else False
+            
+            if ref_filt or miss_filt:
+                if ref_filt: 
+                    ref_filt_count += 1
+                if miss_filt:
+                    miss_filt_count += 1
+                    
+            else:
                 keep_sites.append(i)
                 
+       
         n_removed = num_sites - len(keep_sites)
-        sys.stderr.write(f'{n_removed} sites did not pass max. missing threshold ({mep.maxmissing})\n')
+        sys.stderr.write(f'{n_removed} sites did not pass filtering. Too much missing data: {miss_filt_count}. Only REF different: {ref_filt_count}\n')
         
         self.matrix = self.matrix[:, keep_sites]
         self.variable_positions = [self.variable_positions[i] for i in keep_sites]
