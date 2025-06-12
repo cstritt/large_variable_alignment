@@ -3,3 +3,5 @@ lib/__pycache__
 run26k_strains.slrm
 launch.json
 depth_file_traversal.ipynb
+std*
+testing/results

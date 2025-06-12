@@ -12,35 +12,26 @@ from joblib import Parallel, delayed
 
 
 class mep:
-    """ 
-    
-    """
 
     def __init__(self, args):
-       
-        # Hard-code some parameters to v2
-        self.path_to_v2_output = '/scicore/home/gagneux/GROUP/tbresearch/genomes/IN_PROGRESS/common_mappings/PipelineTB/v2'
-        self.snps_suffix = 'mutect2.filtered.homo.snps.vcf'
-        self.depth_suffix = 'depth.gz'
         
-        # G numbers and file paths
-        self.gnumbers = []
-        self.filepaths = {}
-        
+        # Create list of vcf_file(s)
+        self.vcf_files = []
         with open(args.input) as f:
             for line in f:
-                g =  line.strip().split('\t')[0]
-                path_to_VCF =  os.path.join(self.path_to_v2_output,g[0:3],g[3:5],g[5:],g+'.{}'.format(self.snps_suffix))
-                path_to_depth_file =  os.path.join(self.path_to_v2_output,g[0:3],g[3:5],g[5:],g+'.{}'.format(self.depth_suffix))
-                self.gnumbers.append(g)
-                self.filepaths[g] = (path_to_VCF, path_to_depth_file)
+                self.vcf_files.append(line.strip())
                 
-        # Add outgroup G number to filepaths
-        self.outgroup = args.outgroup
-        g = self.outgroup
-        path_to_VCF =  os.path.join(self.path_to_v2_output,g[0:3],g[3:5],g[5:],g+'.{}'.format(self.snps_suffix))
-        path_to_depth_file =  os.path.join(self.path_to_v2_output,g[0:3],g[3:5],g[5:],g+'.{}'.format(self.depth_suffix))
-        self.filepaths[g] = (path_to_VCF, path_to_depth_file)
+        # Depth files, if provided
+        self.depth_files = {}
+        if args.depth_files:
+            with open(args.depth_files) as f:
+                for line in f:
+                    sample, filepath = line.strip().split('\t')
+                    self.depth_files[sample] = filepath
+            
+        # Outgroup vcf and depth file
+        self.outvcf = args.outvcf
+        self.outdepth = args.outdepth
             
         # Reference genome
         self.reference = SeqIO.read(args.reference, 'fasta')
@@ -52,22 +43,16 @@ class mep:
             os.makedirs(self.output_folder)
         
         # Positions in repeats
-        self.repeats = set()
-        with open(args.repeats,'r') as f:
-            next(f)
-            for line in f:
-                fields = line.strip().split('\t')
-                start = int(fields[1])
-                end = int(fields[2])
-                for pos in range(start, end + 1):
-                    self.repeats.add(pos)
-            
-        # Positions in DR loci     
-        self.dr_loci = set()
-        with open(args.drug,'r') as f:
-            for line in f:
-                dr_pos = line.strip()
-                self.dr_loci.add(int(dr_pos))             
+        self.exclude = set()
+        if args.exclude:
+            with open(args.exclude,'r') as f:
+                next(f)
+                for line in f:
+                    fields = line.strip().split('\t')
+                    start = int(fields[1])
+                    end = int(fields[2])
+                    for pos in range(start, end + 1):
+                        self.exclude.add(pos)        
    
         # Filters: depth below which a site is considered missing, 
         # maximum proportion of missing alleles at a site
@@ -75,11 +60,8 @@ class mep:
         self.maxmissing = args.maxmissing
         self.threads = args.threads
 
-
-class variantmatrix:
-    """ 
     
-    """
+class variantmatrix:
     
     def __init__(self):
         
@@ -88,10 +70,12 @@ class variantmatrix:
         self.variant_dict = {}
         self.outgroup_alleles = {}
         
-        self.stats =  {   
-            'filt_repeats' : set(),
-            'filt_dr' : set(),
-            'ref_larger_than_one' : 0
+        self.stats =  {  
+            'SNPs': 0,
+            'MNPs': 0,
+            'insertions' : 0,
+            'deletions' : 0,
+            'exclude' : set()
         }
         
         # Filled by convert_to_array
@@ -111,64 +95,90 @@ class variantmatrix:
         
         """
         
-        def get_variant_dict(gnumbers):
+        def get_variant_dict(vcf_files):
             
+            # Create a dictionary to store the variants
             variant_dict = defaultdict(dict)
-            
-            for g in gnumbers:
+            samples_all = []
+                       
+            # Loop through the vcf files
+            for vcf in vcf_files:
                 
-                # Get path to vcf on sciCORE
-                path_to_VCF =  mep.filepaths[g][0]
-        
-                # Fill in variants
-                with open(path_to_VCF) as f:
-                    for line in f:
-                        if line.startswith('#'):
-                            continue
-                        
-                        fields = line.strip().split('\t')
-                        pos = int(fields[1])
-                        
-                        # Ignore variants in repeats and resistance loci
-                        if pos in mep.repeats:
-                            self.stats['filt_repeats'].add(pos)
-                            continue
-                        if pos in mep.dr_loci:
-                            self.stats['filt_dr'].add(pos)
-                            continue
-                                
-                        ref = fields[3]
-                        alt =  fields[4].split(',')
-                        
-                        # If there are multiple alt alleles, take the one with the highest support
-                        if len(alt) > 1:
-                            info = fields[-1].split(':')
-                            ad = [int(x) for x in info[1].split(',')]
-                            ad_max = ad.index(max(ad))
-                            alt = alt[ad_max - 1]
-                        else:
-                            alt = alt[0]
+                if vcf.endswith('.gz'):
+                    vcfhandle = gzip.open(vcf, 'rt')
+                else:
+                    vcfhandle = open(vcf)
+                    
+                for line in vcfhandle:
+                    
+                    if line.startswith('##'):
+                        continue
+                    
+                    fields = line.strip().split('\t')
+                    
+                    if line.startswith('#CHROM'):
+                        samples = fields[9:]
+                        samples_all += samples
+                        continue
+                    
+                    pos = int(fields[1])
+                    
+                    # Ignore variants in excluded loci
+                    if pos in mep.exclude:
+                        self.stats['exclude'].add(pos)
+                        continue
     
-                        # Single nucleotide polymorphism
-                        if len(ref) == 1:
-                            
-                            # The ALT allele with the highest frequency is an insertion (quite rare ...): 
-                            # skip, since first base of the insertion corresponds to the reference base
-                            if len(alt) > 1:
-                                continue
-                            
-                            variant_dict[pos][g] = alt
+                    # Get the REF and ALT alleles
+                    ref = fields[3]
+                    alt =  fields[4].split(',')
+                    
+                    # If there are multiple alt alleles, take the one with the highest support
+                    # Presupposes that vcf are single-sample or have been merged with each allele on a seperate row
+                    if len(alt) > 1:
+                        info = fields[-1].split(':')
+                        ad = [int(x) for x in info[1].split(',')]
+                        ad_max = ad.index(max(ad))
+                        alt = alt[ad_max - 1]
+                    else:
+                        alt = alt[0]
                                 
-                        # Multi-nucleotide polymorphism (optionally skip ...)
+                    genotypes = [x.split(':')[0] for x in fields[9:]]
+                    genotypes_valid = [i for i, gt in enumerate(genotypes) if not '.' in gt]
+                    
+                    for i in genotypes_valid:
+                        
+                        gt = genotypes[i]
+                        sample = samples[i]
+                        
+                        # Insertion
+                        if len(ref) == 1 and len(alt) > 1:
+                            self.stats['insertions'] += 1
+                            continue
+                        
+                        # SNP
+                        if len(ref) == 1 and len(alt) == 1:
+                            variant_dict[pos][sample] = alt
+                            self.stats['SNPs'] += 1
+                            
+                        # MNP
                         if len(ref) > 1 and len(ref) == len(alt):
-                            self.stats['ref_larger_than_one'] += 1
                             for i, base in enumerate(alt):
-                                variant_dict[pos+i][g] = base
-                                
-            return variant_dict
+                                # Add the variant to the dictionary
+                                variant_dict[pos+i][sample] = base
+                            self.stats['MNPs'] += 1
+                        
+                        # Deletion (redundant when depth files are provided: '-' will be overwritten with 'N')
+                        if len(ref) > 1 and len(alt) == 1:
+                            for i in range(1,len(ref)):
+                                variant_dict[pos+i][sample] = '-'
+                            
+                            self.stats['deletions'] += 1
+                                    
+            return variant_dict, samples_all
         
-        self.variant_dict = get_variant_dict(mep.gnumbers)
-        self.outgroup_alleles = get_variant_dict([mep.outgroup])
+        self.variant_dict, self.samples = get_variant_dict(mep.vcf_files)  # this defines the samples order for the variant matrix!
+        self.outgroup_alleles, self.outgroup = get_variant_dict([mep.outvcf])
+        self.outgroup = self.outgroup[0]
         
         positions = list(self.variant_dict.keys())
         self.variable_positions = sorted(positions, key=lambda x: int(x))
@@ -180,10 +190,9 @@ class variantmatrix:
 
         def encode_base(b):
             return base_code.get(b, 5)  # N if unknown
-
-        samples = mep.gnumbers        
+     
         num_sites = len(self.variable_positions)
-        num_samples = len(samples)
+        num_samples = len(self.samples)
         
         ref_bases = {pos: mep.reference[pos - 1] for pos in self.variable_positions}
         
@@ -193,10 +202,8 @@ class variantmatrix:
         self.matrix = numpy.full((num_samples, num_sites), base_code['-'], dtype=numpy.uint8)
         
         pos_index = {pos: i for i, pos in enumerate(self.variable_positions)}
-        sample_index = {g: i for i, g in enumerate(samples)}
-        
-        keep_sites = []
-   
+        sample_index = {g: i for i, g in enumerate(self.samples)}
+           
         # Fill matrix
         for pos in self.variable_positions:
 
@@ -212,27 +219,6 @@ class variantmatrix:
                 self.matrix[j, i] = base
     
     
-    def extract_sorted_rows_from_gz(self, path_to_depth, sorted_positions, mindepth):
-  
-        missing = []
-        pos_idx = 0
-        next_target = sorted_positions[pos_idx]
-        
-        with gzip.open(path_to_depth, 'rt') as f:
-            for i, line in enumerate(f, start=1):
-                if i == next_target:
-                    val = int(line.strip())
-                    if val < mindepth:
-                        missing.append(i)
-                    pos_idx += 1
-                    if pos_idx >= len(sorted_positions):
-                        break
-                    next_target = sorted_positions[pos_idx]
-        
-        return missing
-    
-
-
     def get_missing_positions(self, sample_idx, path, sorted_positions, mindepth):
         
         missing_pos = []
@@ -253,8 +239,8 @@ class variantmatrix:
     
     def traverse_depth_files_parallel(self, mep):
         
-        depth_files = [mep.filepaths[g][1] for g in mep.gnumbers if g != mep.outgroup]
-        
+        depth_files = [mep.depth_files[sample] for sample in self.samples]
+         
         missing_positions = Parallel(n_jobs=mep.threads)(
             delayed(self.get_missing_positions)(
                 idx, sample_path, self.variable_positions, mep.mindepth
@@ -266,82 +252,16 @@ class variantmatrix:
         
         for sample_idx, missing_pos in missing_positions:
             missing_cols = [pos_to_col[pos] for pos in missing_pos]
-            self.matrix[sample_idx, missing_cols] = 4
-            self.n_missing[mep.gnumbers[sample_idx]] = len(missing_cols)
+            self.matrix[sample_idx, missing_cols] = 5
+            self.n_missing[self.samples[sample_idx]] = len(missing_cols)
             
-        n, missing_outgroup = self.get_missing_positions('N', mep.filepaths[mep.outgroup][1], self.variable_positions, mep.mindepth)
+        n, missing_outgroup = self.get_missing_positions('N', mep.outdepth, self.variable_positions, mep.mindepth)
 
         for pos in missing_outgroup:
-            self.outgroup_alleles[pos][mep.outgroup] = '-'
+            self.outgroup_alleles[pos][self.outgroup] = 'N'
             
 
-    def extract_rows_ra(self, path_to_depth, positions, mindepth):
-        """ Use random access to extract rows rapidly from depth file
-        """
-        
-        with gzip.open(path_to_depth, 'rb') as f:
-            
-            # Get the file size
-            f.seek(0, 2)
-            file_size = f.tell()
-            
-            missing = []
-            
-            # Iterate over the row indices
-            for row_idx in positions:
-                # Calculate the offset of the row in the file
-                offset = (row_idx - 1) * 5  # 4 bytes per int, +1 for newline
-                
-                # Check if the offset is within the file bounds
-                if offset >= file_size:
-                    break
-                
-                # Seek to the offset
-                f.seek(offset)
-                
-                # Read the row
-                row = f.read(5)
-                
-                # Check if we've reached the end of the file
-                if len(row) < 5:
-                    break
-                
-                # Unpack the row
-                row_int = struct.unpack('i', row[:4])[0]
-                
-                # Add missing position to list
-                if row_int < mindepth:
-                    missing.append(row_idx)
-                    
-        return missing
-    
-    
-    def traverse_depth_files(self, mep):
-        
-        depth_files = {g: mep.filepaths[g][1] for g in mep.gnumbers if g != mep.outgroup}
-        
-        positions = self.variable_positions
-        samples = mep.filepaths.keys()
-        pos_index = {pos: i for i, pos in enumerate(positions)}
-        sample_index = {g: i for i, g in enumerate(samples)}
-        
-        for g, depth_file in depth_files.items():
-            j = sample_index[g]
-            missing = self.extract_sorted_rows_from_gz(depth_file, positions, mep.mindepth)
-            for pos in missing: 
-                i = pos_index[pos]
-                self.matrix[j,i] = 4
-                
-        
-        # Same for outgroup
-        missing = self.extract_rows_ra(mep.filepaths[mep.outgroup][1], positions, mep.mindepth)
-        for pos in missing:
-            if pos not in self.outgroup_alleles:
-                self.outgroup_alleles[pos] = {}
-            self.outgroup_alleles[pos][mep.outgroup] = '-'
-
-
-    def max_missing_filter(self, mep):
+    def apply_filters(self, mep):
         
         base_code = {'A': 0, 'C': 1, 'G': 2, 'T': 3, '-': 4, 'N': 5}
         keep_sites = []
@@ -405,22 +325,20 @@ class variantmatrix:
         fasta_handle = open(os.path.join(mep.output_folder, 'snp_alignment.fasta'), 'w')
         pos_handle = open(os.path.join(mep.output_folder, 'positions_in_alignment.tsv'), 'w')
 
-        for j, g in enumerate(mep.gnumbers):
+        for j, g in enumerate(self.samples):
             seq = ''.join(code_base[b] for b in self.matrix[j,:])
             rec = SeqRecord(Seq(seq), id=g, name='', description='')
             SeqIO.write(rec, fasta_handle, 'fasta')
        
         # Handle outgroup
-        if mep.outgroup:
+        if self.outgroup:
             outseq = []
             for pos in self.variable_positions:
                 ref_base = ref_bases[pos]
-                base = self.outgroup_alleles.get(pos, {}).get(mep.outgroup, ref_base)
-                
-                
+                base = self.outgroup_alleles.get(pos, {}).get(self.outgroup, ref_base)
                 outseq.append(base)
             seq = ''.join(outseq)
-            rec = SeqRecord(Seq(seq), id=mep.outgroup, name='', description='')
+            rec = SeqRecord(Seq(seq), id=self.outgroup, name='', description='')
             SeqIO.write(rec, fasta_handle, 'fasta')
 
         # Store aligned positions
@@ -429,148 +347,6 @@ class variantmatrix:
             
         fasta_handle.close()
         pos_handle.close()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-class output:
-
-    def __init__(self, mep):
-
-        self.seqs = {g : '' for g in mep.gnumbers}
-
-        self.sites_in_alignment = []
-        
-        self.non_variable = {
-            'A' : 0,
-            'C' : 0,
-            'G' : 0,
-            'T' : 0
-        }
-        
-         
-    def get_seqs(self, mep, variantmatrix):
-        
-        # Pandas to numpy for speed
-        #variantmatrix.variants = variantmatrix.variants.values
-        
-        self.stats = {
-            'filt_maxmissing' : [],
-            'biallelic' : 0,
-            'multiallelic' : 0,
-            'singletons' : 0,
-            'invariant' : 0
-        }
-        
-        self.stats.update(variantmatrix.stats)
-        
-        positions = variantmatrix.variable_positions if mep.subsample is None else variantmatrix.pos_subset
-            
-        for pos in positions:
-            
-            site = ''
-            for g in mep.gnumbers:
-                if g in variantmatrix.variants[pos]:
-                    site += variantmatrix.variants[pos][g]
-                else:
-                    site += mep.reference[pos-1]
-                    
-            # Re-check if site is invariant
-            site_bases_only = ''.join([base for base in site if base in 'ACGT'])
-            if len(set(site_bases_only)) == 1:  
-                self.stats['invariant'] += 1
-                continue
-            
-            
-            # Proportion of missing alleles
-            n_missing = site.count('-')
-            missing_prop = n_missing / len(mep.gnumbers)
-            if missing_prop > mep.maxmissing:
-                self.stats['filt_maxmissing'].append(pos)
-                continue
-            
-            # Add bases to sequences
-            for base,g in zip(site, mep.gnumbers):
-                self.seqs[g] += base
-            self.sites_in_alignment.append(pos)
-            
-        # Add outgroup alleles
-        if mep.outgroup:
-            
-            self.seqs[mep.outgroup] = ''
-        
-            for pos in self.sites_in_alignment:
-                if pos in variantmatrix.outgroup_alleles:
-                    self.seqs[mep.outgroup] += variantmatrix.outgroup_alleles[pos][mep.outgroup]
-                else:
-                    self.seqs[mep.outgroup] += 'N'
-                
-                
-        # Check if all seqs have same length
-        seqlengths = [len(s) for s in self.seqs.values()]
-        if len(set(seqlengths)) > 1:
-            raise ValueError('Sequences have different lengths')
-                    
-                    
-    def count_nonvariable(self, mep, variantmatrix):
-        """ 
-        Estimate the number of non-variable positions in the alignment. 
-        Do not count sites excluded through subsampling or the maxmissing filter.
-        """
-        
-        called_or_ignored = set(self.sites_in_alignment) | set(mep.repeats) | set(mep.dr_loci) | set(self.stats['filt_maxmissing']) | set(variantmatrix.subsample_excluded)
-        
-        for i, base in enumerate(mep.reference):
-            
-            pos = i+1
-            
-            if pos not in called_or_ignored:
-                self.non_variable[base] += 1
-                 
-                                      
-    def write_files(self, mep, get_stats=False):
- 
-        # alignment
-        with open(os.path.join(mep.output_folder, 'snp_alignment.fasta'), 'w') as fasta_handle:
-            for g in self.seqs:
-                rec = SeqRecord(Seq(self.seqs[g]), id=g, name='', description='')
-                SeqIO.write(rec, fasta_handle, 'fasta')
-
-        # positions
-        with open(os.path.join(mep.output_folder, 'positions_in_alignment.tsv'), 'w') as f:
-              for pos in self.sites_in_alignment:
-                  f.write(str(pos) + '\n')
-                  
-        # counts of non-variable bases                  
-        with open(os.path.join(mep.output_folder, 'nonvariable_counts.tsv'), 'w') as f:
-            for base in self.non_variable:
-                f.write(base + '\t' + str(self.non_variable[base]) + '\n')
-                
-        # stats
-        with open(os.path.join(mep.output_folder, 'stats.tsv'), 'w') as f:
-            for k, v in self.stats.items():
-                
-                if not get_stats and k in ['biallelic', 'multiallelic', 'singletons']:
-                    continue
-                
-                if k == 'filt_maxmissing':
-                    row = k + '\t' + str(len(v)) + '\n'
-                else:
-                    row = k + '\t' + str(v) + '\n'
-                    
-                f.write(row)
-    
 
 def estimate_memory(nrow, ncol, dtype='int8'):
     """
@@ -596,101 +372,3 @@ def estimate_memory(nrow, ncol, dtype='int8'):
     memory_required_gb = memory_required / (1024 ** 3)
 
     return round(memory_required_gb, 2)
-
-
-
-
-#%% Not used
-
-class variantmatrix_sparse:
-    
-    from scipy.sparse import lil_matrix
-
-    def __init__(self, mep):
-        self.stats = {   
-            'filt_repeats': 0,
-            'filt_dr': 0,
-            'ref_larger_than_one': 0
-        }
-
-    def add_SNPs(self, mep):
-        
-        base_to_int = {"A": 0, "C": 1, "G": 2, "T": 3, "N": 4, "-": 5}
-        
-        variant_positions = set()
-        g_to_idx = {g: idx for idx, g in enumerate(mep.gnumbers)}
-        position_to_idx = {}
-        allele_data = defaultdict(dict)
-
-        def process_vcf(g):
-            path_to_vcf = mep.filepaths[g][0]
-            with open(path_to_vcf) as f:
-                for line in f:
-                    if line.startswith('#'):
-                        continue
-                    fields = line.strip().split('\t')
-                    pos = int(fields[1])
-
-                    if pos in mep.repeats:
-                        self.stats['filt_repeats'] += 1
-                        continue
-                    if pos in mep.dr_loci:
-                        self.stats['filt_dr'] += 1
-                        continue
-
-                    ref = fields[3]
-                    alt = fields[4].split(',')
-
-                    if len(alt) > 1:
-                        info = fields[-1].split(':')
-                        ad = [int(x) for x in info[1].split(',')]
-                        ad_max = ad.index(max(ad))
-                        alt = alt[ad_max - 1]
-                    else:
-                        alt = alt[0]
-
-                    if len(ref) == 1 and len(alt) == 1:
-                        allele_data[pos][g] = base_to_int(alt)
-                        variant_positions.add(pos)
-                    elif len(ref) > 1 and len(ref) == len(alt):
-                        self.stats['ref_larger_than_one'] += 1
-                        for i, base in enumerate(alt):
-                            allele_data[pos+i][g] = base_to_int(base)
-                            variant_positions.add(pos+i)
-
-        for g in mep.gnumbers:
-            process_vcf(g)
-
-        self.variant_positions = sorted(variant_positions)
-        position_to_idx = {pos: idx for idx, pos in enumerate(self.variant_positions)}
-        self.position_to_idx = position_to_idx
-        self.g_to_idx = g_to_idx
-
-        # Sparse matrix initialization (LIL format for fast row-wise assignment)
-        M, N = len(self.g_to_idx), len(self.position_to_idx)
-        self.matrix = lil_matrix((M, N), dtype='U1')
-
-        # Fill the sparse matrix
-        for pos, alleles in allele_data.items():
-            j = position_to_idx[pos]
-            for g, base in alleles.items():
-                i = g_to_idx[g]
-                self.matrix[i, j] = base
-
-    def get_missing_from_depth(self, mep):
-        for g in mep.gnumbers:
-            if g == mep.outgroup:
-                continue
-            path_to_depth = mep.filepaths[g][1]
-            with gzip.open(path_to_depth, 'rb') as f:
-                for pos in self.variant_positions:
-                    offset = (pos - 1) * 5
-                    f.seek(offset)
-                    row = f.read(5)
-                    if len(row) < 5:
-                        continue
-                    row_int = struct.unpack('i', row[:4])[0]
-                    if row_int < mep.mindepth:
-                        i = self.g_to_idx[g]
-                        j = self.position_to_idx[pos]
-                        self.matrix[i, j] = 5

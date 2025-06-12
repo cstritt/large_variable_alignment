@@ -1,0 +1,1 @@
+/scicore/home/gagneux/stritt0001/TB/projects/MTBC_IS6110-poly/data/fixed_variants.merged.vcf.gz

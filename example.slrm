@@ -2,7 +2,7 @@
 
 #SBATCH --job-name=example
 #SBATCH --cpus-per-task=20
-#SBATCH --mem=20G
+#SBATCH --mem=100G
 #SBATCH --time=06:00:00
 #SBATCH --output=stdout.o
 #SBATCH --error=stderr.e
@@ -10,9 +10,9 @@
 
 source ~/miniconda3/bin/activate base
 
-gnumbers=$1
-
 python get_alignment.py \
--i $gnumbers \
--o ./testing \
+-i testing/10k_genomes.vcffiles.txt \
+-d testing/10k_genomes.depthfiles.tsv \
+-e resources/exclude/excluded_regions.bed \
+-o ./testing/results/10k_genomes \
 -t 20
