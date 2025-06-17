@@ -57,7 +57,6 @@ class mep:
         # Filters: depth below which a site is considered missing, 
         # maximum proportion of missing alleles at a site
         self.mindepth = args.mindepth
-        self.maxmissing = args.maxmissing
         self.threads = args.threads
 
     
@@ -280,6 +279,10 @@ class variantmatrix:
             
 
     def apply_filters(self, mep):
+        """
+        Obsolete. Now filtering out sites and samples with many missing alleles can
+        be performed in a second step. This way the alignment has not to be rebuild.
+        """
         
         base_code = {'A': 0, 'C': 1, 'G': 2, 'T': 3, '-': 4, 'N': 5}
         keep_sites = []
@@ -366,12 +369,14 @@ class variantmatrix:
         n_sites = len(self.variable_positions)
         n_samples = len(self.samples)
         
-        for pos, count_missing in zip(self.variable_positions, self.site_missing):
-            site_handle.write(f'{pos}\t{count_missing}\t{round(count_missing/n_sites)}\n')
+        for pos, site_missing in zip(self.variable_positions, self.site_missing):
+            count_missing = site_missing[0] + site_missing[1]
+            site_handle.write(f'{pos}\t{count_missing}\t{round(count_missing/n_samples, 5)}\n')
         site_handle.close()
             
-        for sample, count_missing in zip(self.samples, self.sample_missing):
-            sample_handle.write(f'{sample}\t{count_missing}\t{round(count_missing/n_samples)}')
+        for sample, sample_missing in zip(self.samples, self.sample_missing):
+            count_missing = sample_missing[0] + sample_missing[1]
+            sample_handle.write(f'{sample}\t{count_missing}\t{round(count_missing/n_sites, 5)}\n')
         sample_handle.close()
     
 
