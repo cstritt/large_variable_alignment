@@ -273,14 +273,10 @@ class variantmatrix:
                 'col_counts' is a list of tuples (count_4, count_5) for each column.
         """
         # Count 4s and 5s in each row
-        row_counts = [(numpy.sum(row == 4), numpy.sum(row == 5)) for row in self.matrix]
+        self.sample_missing = [(numpy.sum(row == 4), numpy.sum(row == 5)) for row in self.matrix]
 
         # Count 4s and 5s in each column
-        col_counts = [(numpy.sum(col == 4), numpy.sum(col == 5)) for col in self.matrix.T]
-
-        return {'row_counts': row_counts, 'col_counts': col_counts}
-            
-        
+        self.site_missing = [(numpy.sum(col == 4), numpy.sum(col == 5)) for col in self.matrix.T]         
             
 
     def apply_filters(self, mep):
@@ -346,7 +342,8 @@ class variantmatrix:
         ref_bases = {pos: mep.reference[pos - 1] for pos in self.variable_positions}
 
         fasta_handle = open(os.path.join(mep.output_folder, 'snp_alignment.fasta'), 'w')
-        pos_handle = open(os.path.join(mep.output_folder, 'positions_in_alignment.tsv'), 'w')
+        sample_handle = open(os.path.join(mep.output_folder, 'snp_alignment.samples.tsv'), 'w')
+        site_handle = open(os.path.join(mep.output_folder, 'snp_alignment.sites.tsv'), 'w')
 
         for j, g in enumerate(self.samples):
             seq = ''.join(code_base[b] for b in self.matrix[j,:])
@@ -363,13 +360,20 @@ class variantmatrix:
             seq = ''.join(outseq)
             rec = SeqRecord(Seq(seq), id=self.outgroup, name='', description='')
             SeqIO.write(rec, fasta_handle, 'fasta')
+        fasta_handle.close()
 
         # Store aligned positions
-        for pos in self.variable_positions:
-            pos_handle.write(str(pos) + '\n')
+        n_sites = len(self.variable_positions)
+        n_samples = len(self.samples)
+        
+        for pos, count_missing in zip(self.variable_positions, self.site_missing):
+            site_handle.write(f'{pos}\t{count_missing}\t{round(count_missing/n_sites)}\n')
+        site_handle.close()
             
-        fasta_handle.close()
-        pos_handle.close()
+        for sample, count_missing in zip(self.samples, self.sample_missing):
+            sample_handle.write(f'{sample}\t{count_missing}\t{round(count_missing/n_samples)}')
+        sample_handle.close()
+    
 
 def estimate_memory(nrow, ncol, dtype='int8'):
     """

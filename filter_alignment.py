@@ -2,6 +2,7 @@
 
 #%%
 import argparse
+import sys
 
 from Bio import SeqIO
 from collections import defaultdict
@@ -20,136 +21,66 @@ def get_args():
     parser = argparse.ArgumentParser(
         description = """
         Get distributions of missing alleles per site and sample and/or apply filters to alignment. 
-        
         """)
     
     parser.add_argument('-i', dest='input_fastsa', required=True,
-                        help='.')
+                        help='Fasta file with alignment.')
     
-    parser.add_argument('-o', dest='output_fasta',required=True,
-                        help='.')
+    parser.add_argument('-i', dest='site_missing', required=True,
+                        help='File with the count/proportion of missing alleles per site.')
     
-    parser.add_argument('-m', dest='missing_stats', )
+    parser.add_argument('-i', dest='sample_missing', required=True,
+                        help='File with the count/proportion of missing alleles per sample.')
         
-    parser.add_argument('-mi', dest='maxmissing_indv', default=1, type = float,
-                        help='')
+    parser.add_argument('-mm', dest='maxmissing_site', required=True, type = float,
+                        help='Maximum proportion of missing alleles per site')
     
-    parser.add_argument('-ms', dest='maxmissing_site', default=0.5, type = float,
-                        help='Maximum proportion of missing alleles allowed per site')
+    parser.add_argument('-ms', dest='maxmissing_sample', required=True, type = float,
+                        help='Maximum proportion of missing alleles per sample')
     
     args = parser.parse_args()
 
     return args
 
 
-def count_N_and_minus_per_sample_and_position(alignment):
-    """
-    Count the occurrences of 'N' and '-' in nucleotide sequences from an alignment,
-    both per sample and per position in the alignment.
-
-    Args:
-    - alignment (dict): A dictionary containing the alignment. Keys are sample headers and values are sequences.
-
-    Returns:
-    - dict: A dictionary with sequence headers as keys and a tuple (count_N, count_minus) as values.
-    - dict: A dictionary with position indices as keys and a tuple (count_N, count_minus) as values.
-    """
-    sample_counts = {}
-    position_counts = defaultdict(lambda: [0, 0])  # [count_N, count_minus]
-    
-    # Count per sample
-    for header, record in alignment.items():
-        sequence = record.seq
-        count_N = sequence.count('N')
-        count_minus = sequence.count('-')
-        sample_counts[header] = (count_N, count_minus)
-        
-    # Count per position using zip_longest to handle sequences of different lengths
-    for position in zip_longest(*alignment.values(), fillvalue=' '):
-        count_N = sum(1 for nucleotide in position if nucleotide == 'N')
-        count_minus = sum(1 for nucleotide in position if nucleotide == '-')
-        idx = position_counts[next(iter(position_counts))][0]  # Use the next available index
-        position_counts[idx] = [count_N, count_minus]
-    
-    return sample_counts, dict(position_counts)
-
-
-def site_filter(alignment, threshold=0.1):
-    """
-    Filter out sites and samples where the proportion of '-' or 'N' characters exceeds a threshold.
-
-    Args:
-    - alignment (dict): A dictionary containing the alignment. Keys are sample headers and values are sequences.
-    - threshold (float): The threshold proportion (between 0 and 1).
-
-    Returns:
-    - dict: Filtered alignment.
-    """
-    filtered_alignment = {}
-    positions_to_remove = set()
-
-    # Determine positions to remove
-    for seq in alignment.values():
-        for idx, nucleotide in enumerate(seq):
-            if nucleotide in ['-', 'N']:
-                if seq.count(nucleotide, idx, idx+1) / len(seq) > threshold:
-                    positions_to_remove.add(idx)
-
-    # Filter sequences
-    for header, seq in alignment.items():
-        filtered_seq = ''.join([seq[i] for i in range(len(seq)) if i not in positions_to_remove])
-        if filtered_seq:  # Ensure the sample isn't empty after filtering
-            filtered_alignment[header] = filtered_seq
-
-    return filtered_alignment
-
-
-def remove_samples_with_threshold(alignment, threshold=0.1):
-    """
-    Remove samples where the proportion of '-' or 'N' characters exceeds a threshold.
-
-    Args:
-    - alignment (dict): A dictionary containing the alignment. Keys are sample headers and values are sequences.
-    - threshold (float): The threshold proportion (between 0 and 1).
-
-    Returns:
-    - dict: Filtered alignment.
-    """
-    filtered_alignment = {}
-
-    for header, seq in alignment.items():
-        count_N = seq.count('N')
-        count_minus = seq.count('-')
-        total = len(seq)
-        
-        if (count_N + count_minus) / total <= threshold:
-            filtered_alignment[header] = seq
-
-    return filtered_alignment
-
-# Example usage:
-# sample_results, position_results = count_N_and_minus_per_sample_and_position("path_to_your_fasta_file.fasta")
-# filtered_alignment = filter_alignment_by_threshold(sample_results, threshold=0.2)
-# filtered_samples = remove_samples_with_threshold(sample_results, threshold=0.2)
-
-#%%
 def main():
     
-    #%%
-    #args = get_args()
-    args = GETARGS()
+    args = get_args()
     aln_d = SeqIO.to_dict(SeqIO.parse(args.input_fasta, "fasta"))
+
+    sites_to_remove = []
+    with open(args.site_missing) as f:
+        indx = 0
+        for line in f:
+            fields = line.strip().split('\t')
+            sample = fields[0]
+            prop_missing = float(fields[-1])
+            if prop_missing > args.maxmissing_site:
+                sites_to_remove.append(indx)
+            indx += 1
     
-    #%% Count missing and deleted alleles per site and sample
-    count_N_and_minus_per_sample_and_position(aln_d)
+    samples_to_remove = []
+    with open(args.sample_missing) as f:
+        for line in f:
+            fields = line.strip().split('\t')
+            sample = fields[0]
+            prop_missing = float(fields[-1])
+            if prop_missing > args.maxmissing_sample:
+                samples_to_remove.append(sample)
+                
+    # Remove samples
+    aln_d_filt = {k : aln_d[k] for k in aln_d if k not in samples_to_remove}
     
-    
-    
-    
-    #%% Filter: first sites, then samples
-    aln_site_filt = site_filter()
-    aln_sample_filt = remove_samples_with_threshold()
+    # Remove sites
+    for sample, record in aln_d_filt.items():
+        seq = record.seq
+        filtered_seq = ''.join([seq[i] for i in range(len(seq)) if i not in sites_to_remove])
+        aln_d_filt[sample].seq = filtered_seq
         
+    # Write to stdout
+    for sample, record in aln_d_filt.items():
+        SeqIO.write(record, sys.stdout, 'fasta')
+
         
 if __name__ == '__main__':
     main()
