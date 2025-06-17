@@ -260,6 +260,28 @@ class variantmatrix:
         for pos in missing_outgroup:
             self.outgroup_alleles[pos][self.outgroup] = 'N'
             
+    
+    def count_missing(self):
+        """
+        Count the occurrences of 4s (-) and 5s (N) in each row and column of the variant matrix.
+        
+        self.matrix: variant matrix with samples as rows and sites as columns.
+
+        Returns:
+        - dict: A dictionary with 'row_counts' and 'col_counts' as keys.
+                'row_counts' is a list of tuples (count_4, count_5) for each row.
+                'col_counts' is a list of tuples (count_4, count_5) for each column.
+        """
+        # Count 4s and 5s in each row
+        row_counts = [(numpy.sum(row == 4), numpy.sum(row == 5)) for row in self.matrix]
+
+        # Count 4s and 5s in each column
+        col_counts = [(numpy.sum(col == 4), numpy.sum(col == 5)) for col in self.matrix.T]
+
+        return {'row_counts': row_counts, 'col_counts': col_counts}
+            
+        
+            
 
     def apply_filters(self, mep):
         
@@ -302,8 +324,9 @@ class variantmatrix:
         
 
     def write_output(self, mep):
-        """ Output fasta with variable alignment, and txt file
-        with positions that were included.
+        """ Output fasta with variable alignment, a sites file with the number of positions included 
+        and the number of deleted/missing alleles per site, and a sample file with the number of missing 
+        alleles per sample.
         
         # alignment
         with open(os.path.join(mep.output_folder, 'snp_alignment.fasta'), 'w') as fasta_handle:
