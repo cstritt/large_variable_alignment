@@ -11,8 +11,16 @@
 source ~/miniconda3/bin/activate base
 
 python get_alignment.py \
--i testing/10k_genomes.vcffiles.txt \
--d testing/10k_genomes.depthfiles.tsv \
+-i testing/1k_genomes.vcffiles.txt \
+-d testing/1k_genomes.depthfiles.tsv \
 -e resources/exclude/excluded_regions.bed \
--o ./testing/results/10k_genomes \
+-o ./testing/results/1k_genomes \
 -t 20
+
+python filter_alignment.py \
+  -i testing/results/1k_genomes/snp_alignment.fasta \
+  -o testing/results/1k_genomes/snp_alignment.filtered.fasta \
+  --sites ./testing/results/1k_genomes/snp_alignment.sites.tsv \
+  --samples ./testing/results/1k_genomes/snp_alignment.samples.tsv \
+  -mm 0.0001 \
+  -ms 0.1

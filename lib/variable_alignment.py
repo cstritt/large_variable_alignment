@@ -57,7 +57,6 @@ class mep:
         # Filters: depth below which a site is considered missing, 
         # maximum proportion of missing alleles at a site
         self.mindepth = args.mindepth
-        self.maxmissing = args.maxmissing
         self.threads = args.threads
 
     
@@ -260,8 +259,30 @@ class variantmatrix:
         for pos in missing_outgroup:
             self.outgroup_alleles[pos][self.outgroup] = 'N'
             
+    
+    def count_missing(self):
+        """
+        Count the occurrences of 4s (-) and 5s (N) in each row and column of the variant matrix.
+        
+        self.matrix: variant matrix with samples as rows and sites as columns.
+
+        Returns:
+        - dict: A dictionary with 'row_counts' and 'col_counts' as keys.
+                'row_counts' is a list of tuples (count_4, count_5) for each row.
+                'col_counts' is a list of tuples (count_4, count_5) for each column.
+        """
+        # Count 4s and 5s in each row
+        self.sample_missing = [(numpy.sum(row == 4), numpy.sum(row == 5)) for row in self.matrix]
+
+        # Count 4s and 5s in each column
+        self.site_missing = [(numpy.sum(col == 4), numpy.sum(col == 5)) for col in self.matrix.T]         
+            
 
     def apply_filters(self, mep):
+        """
+        Obsolete. Now filtering out sites and samples with many missing alleles can
+        be performed in a second step. This way the alignment has not to be rebuild.
+        """
         
         base_code = {'A': 0, 'C': 1, 'G': 2, 'T': 3, '-': 4, 'N': 5}
         keep_sites = []
@@ -302,8 +323,9 @@ class variantmatrix:
         
 
     def write_output(self, mep):
-        """ Output fasta with variable alignment, and txt file
-        with positions that were included.
+        """ Output fasta with variable alignment, a sites file with the number of positions included 
+        and the number of deleted/missing alleles per site, and a sample file with the number of missing 
+        alleles per sample.
         
         # alignment
         with open(os.path.join(mep.output_folder, 'snp_alignment.fasta'), 'w') as fasta_handle:
@@ -323,7 +345,8 @@ class variantmatrix:
         ref_bases = {pos: mep.reference[pos - 1] for pos in self.variable_positions}
 
         fasta_handle = open(os.path.join(mep.output_folder, 'snp_alignment.fasta'), 'w')
-        pos_handle = open(os.path.join(mep.output_folder, 'positions_in_alignment.tsv'), 'w')
+        sample_handle = open(os.path.join(mep.output_folder, 'snp_alignment.samples.tsv'), 'w')
+        site_handle = open(os.path.join(mep.output_folder, 'snp_alignment.sites.tsv'), 'w')
 
         for j, g in enumerate(self.samples):
             seq = ''.join(code_base[b] for b in self.matrix[j,:])
@@ -340,13 +363,22 @@ class variantmatrix:
             seq = ''.join(outseq)
             rec = SeqRecord(Seq(seq), id=self.outgroup, name='', description='')
             SeqIO.write(rec, fasta_handle, 'fasta')
+        fasta_handle.close()
 
         # Store aligned positions
-        for pos in self.variable_positions:
-            pos_handle.write(str(pos) + '\n')
+        n_sites = len(self.variable_positions)
+        n_samples = len(self.samples)
+        
+        for pos, site_missing in zip(self.variable_positions, self.site_missing):
+            count_missing = site_missing[0] + site_missing[1]
+            site_handle.write(f'{pos}\t{count_missing}\t{round(count_missing/n_samples, 5)}\n')
+        site_handle.close()
             
-        fasta_handle.close()
-        pos_handle.close()
+        for sample, sample_missing in zip(self.samples, self.sample_missing):
+            count_missing = sample_missing[0] + sample_missing[1]
+            sample_handle.write(f'{sample}\t{count_missing}\t{round(count_missing/n_sites, 5)}\n')
+        sample_handle.close()
+    
 
 def estimate_memory(nrow, ncol, dtype='int8'):
     """

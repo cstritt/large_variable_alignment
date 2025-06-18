@@ -49,9 +49,6 @@ def get_args():
     parser.add_argument('-md', dest='mindepth', default=5, type = int,
                         help='Depth below which an allele is called as missing')
     
-    parser.add_argument('-mm', dest='maxmissing', default=1, type = float,
-                        help='Maximum proportion of missing alleles allowed per site')
-    
     args = parser.parse_args()
 
     return args
@@ -82,7 +79,7 @@ def main():
     variantmatrix.convert_to_array(mep)
     sys.stderr.write(f'Estimated memory requirement for {len(variantmatrix.samples)}x{len(variantmatrix.variable_positions)} matrix: {variantmatrix.mem_required}G\n')
     
-    # Add missing positions and filter sites
+    # Add missing positions
     if mep.depth_files:
         sys.stderr.write("Adding missing positions\n")
         sys.stderr.flush()
@@ -92,8 +89,9 @@ def main():
         sys.stderr.write("Added missing positions in %f seconds\n" % (end_missing - start_missing))
         sys.stderr.flush()
     
-    # Remove non-variable sites and sites with too many missing alleles
-    variantmatrix.apply_filters(mep)
+    # Count missing alleles per site and sample
+    variantmatrix.count_missing()
+ 
     # Write output
     variantmatrix.write_output(mep)
     
